@@ -54,7 +54,9 @@ def build_forecast_inputs(
     )
 
     arrival_rate = arrivals_daily.mean(axis=0).rename("arrival_rate_per_day")
+    arrival_rate_std = arrivals_daily.std(axis=0).rename("arrival_rate_std_per_day")
     completion_rate = completions_daily.mean(axis=0).rename("completion_rate_per_day")
+    completion_rate_std = completions_daily.std(axis=0).rename("completion_rate_std_per_day")
     wip_now = (
         bm.loc[bm["Actual End Date"].isna() & bm["Owner"].notna()]
         .groupby("Owner")["Card ID"]
@@ -63,7 +65,10 @@ def build_forecast_inputs(
         .rename("current_wip")
     )
 
-    forecast_base = pd.concat([arrival_rate, completion_rate, wip_now], axis=1).fillna(0)
+    forecast_base = pd.concat(
+        [arrival_rate, arrival_rate_std, completion_rate, completion_rate_std, wip_now],
+        axis=1,
+    ).fillna(0)
 
     return {
         "bm": bm,
@@ -88,6 +93,15 @@ def forecast_wip(df: pd.DataFrame, horizon_days: int) -> pd.DataFrame:
         + forecast["expected_arrivals"]
         - forecast["expected_completions"]
     ).clip(lower=0)
+
+    if "arrival_rate_std_per_day" in forecast.columns and "completion_rate_std_per_day" in forecast.columns:
+        net_flow_std = (
+            forecast["arrival_rate_std_per_day"] ** 2
+            + forecast["completion_rate_std_per_day"] ** 2
+        ) ** 0.5 * horizon_days
+        forecast["forecast_wip_low"] = (forecast["forecast_wip"] - net_flow_std).clip(lower=0)
+        forecast["forecast_wip_high"] = forecast["forecast_wip"] + net_flow_std
+
     return forecast
 
 
@@ -200,13 +214,16 @@ def build_forecast_dashboard(
         "expected_arrivals",
         "expected_completions",
         "forecast_wip",
+        "forecast_wip_low",
+        "forecast_wip_high",
         "current_backlog_days",
         "forecast_backlog_days",
         "throughput_ratio",
         "status",
         "status_reason",
     ]
-    dashboard = dashboard[ordered_columns].copy()
+    available_ordered = [c for c in ordered_columns if c in dashboard.columns]
+    dashboard = dashboard[available_ordered].copy()
 
     numeric_columns = [
         "arrival_rate_per_day",
@@ -216,6 +233,8 @@ def build_forecast_dashboard(
         "expected_arrivals",
         "expected_completions",
         "forecast_wip",
+        "forecast_wip_low",
+        "forecast_wip_high",
         "current_backlog_days",
         "forecast_backlog_days",
         "throughput_ratio",

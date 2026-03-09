@@ -105,12 +105,12 @@ def clean_businessmap_sheet(bm_raw: pd.DataFrame) -> pd.DataFrame:
     return bm
 
 
-def load_businessmap_workbook(path: str | Path) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
-    workbook_path = Path(path)
-    bm_raw = pd.read_excel(workbook_path, sheet_name="Businessmap", header=None)
-    bm = clean_businessmap_sheet(bm_raw)
-    links = _clean_standard_sheet(pd.read_excel(workbook_path, sheet_name="Links"))
-    subtasks = _clean_standard_sheet(pd.read_excel(workbook_path, sheet_name="Subtasks"))
+def load_businessmap_workbook(path: str | Path | object) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+    with pd.ExcelFile(path) as xls:
+        bm_raw = pd.read_excel(xls, sheet_name="Businessmap", header=None)
+        bm = clean_businessmap_sheet(bm_raw)
+        links = _clean_standard_sheet(pd.read_excel(xls, sheet_name="Links"))
+        subtasks = _clean_standard_sheet(pd.read_excel(xls, sheet_name="Subtasks"))
     return bm, links, subtasks
 
 
@@ -279,8 +279,12 @@ def add_task_status(df: pd.DataFrame) -> pd.DataFrame:
     return enriched
 
 
-def prepare_businessmap_dataset(path: str | Path) -> dict[str, object]:
-    bm, links, subtasks = load_businessmap_workbook(path)
+def prepare_from_frames(
+    bm: pd.DataFrame,
+    links: pd.DataFrame,
+    subtasks: pd.DataFrame,
+) -> dict[str, object]:
+    """Ejecuta el pipeline de preparación sobre frames ya cargados y limpios."""
     bm = parse_datetime_columns(bm)
     bm = add_duration_features(bm)
     bm, links, subtasks = normalize_card_identifiers(bm, links, subtasks)
@@ -288,10 +292,47 @@ def prepare_businessmap_dataset(path: str | Path) -> dict[str, object]:
     bm = add_subtask_features(bm, subtasks)
     bm = add_link_features(bm, links)
     bm = add_task_status(bm)
-
     return {
         "bm": bm,
         "links": links,
         "subtasks": subtasks,
         "reference_date": reference_date,
     }
+
+
+def merge_workbooks(
+    base_path: str | Path | object,
+    new_path: str | Path | object,
+) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+    """Combina dos exports de BusinessMap.
+
+    Para Card IDs presentes en ambos archivos, el nuevo export tiene
+    prioridad (refleja el estado más reciente de la tarjeta).
+    Las tarjetas solo en el base se conservan.
+    Las tarjetas nuevas se añaden.
+    """
+    base_bm, base_links, base_subtasks = load_businessmap_workbook(base_path)
+    new_bm, new_links, new_subtasks = load_businessmap_workbook(new_path)
+
+    merged_bm = (
+        pd.concat([base_bm, new_bm], ignore_index=True)
+        .drop_duplicates(subset=["Card ID"], keep="last")
+        .reset_index(drop=True)
+    )
+    merged_links = (
+        pd.concat([base_links, new_links], ignore_index=True)
+        .drop_duplicates()
+        .reset_index(drop=True)
+    )
+    merged_subtasks = (
+        pd.concat([base_subtasks, new_subtasks], ignore_index=True)
+        .drop_duplicates()
+        .reset_index(drop=True)
+    )
+
+    return merged_bm, merged_links, merged_subtasks
+
+
+def prepare_businessmap_dataset(path: str | Path | object) -> dict[str, object]:
+    bm, links, subtasks = load_businessmap_workbook(path)
+    return prepare_from_frames(bm, links, subtasks)

@@ -82,6 +82,13 @@ def build_open_tasks(
         last_moved = pd.to_datetime(open_tasks["Last Moved"], errors="coerce").dt.floor("D")
     else:
         last_moved = pd.Series(pd.NaT, index=open_tasks.index)
+
+    # Fallback: si Last Moved es nulo, usar Actual Start Date o Created At
+    for fallback_col in ("Actual Start Date", "Created At"):
+        if fallback_col in open_tasks.columns:
+            fallback = pd.to_datetime(open_tasks[fallback_col], errors="coerce").dt.floor("D")
+            last_moved = last_moved.fillna(fallback)
+
     open_tasks["days_since_last_moved"] = (
         pd.Timestamp(forecast_reference_date).floor("D") - last_moved
     ).dt.total_seconds() / 86400
@@ -189,14 +196,8 @@ def build_open_tasks(
         & (open_tasks["days_since_last_moved"] >= stagnation_p90)
     )
     open_tasks["flag_old_vs_history"] = (
-        (
-            (open_tasks["age_days"] >= open_tasks["benchmark_p90_days"])
-            & (open_tasks["age_days"] >= history_absolute_threshold_days)
-        )
-        | (
-            (open_tasks["age_vs_benchmark"] >= 3)
-            & (open_tasks["age_days"] >= history_absolute_threshold_days)
-        )
+        (open_tasks["age_days"] >= open_tasks["benchmark_p90_days"])
+        | (open_tasks["age_vs_benchmark"] >= 3)
     )
     open_tasks["flag_dependency_risk"] = open_tasks["has_any_links"].eq(1) & (
         open_tasks["flag_old_open"] | open_tasks["flag_stagnant"]
