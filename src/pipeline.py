@@ -6,7 +6,7 @@ from pathlib import Path
 import pandas as pd
 
 from .bottlenecks import build_bottleneck_artifacts
-from .data_prep import prepare_businessmap_dataset
+from .data_prep import prepare_businessmap_dataset, prepare_from_frames
 from .forecast import (
     build_forecast_dashboard,
     build_forecast_inputs,
@@ -15,13 +15,16 @@ from .forecast import (
 
 
 def run_baseline_pipeline(
-    workbook_path: str | Path,
+    workbook_path: str | Path | object | None = None,
     rate_window_days: int = 60,
     dashboard_horizon_days: int = 5,
     scenario_horizons: Iterable[int] = (5, 10, 20),
     min_group_size: int = 5,
+    *,
+    prepared: dict | None = None,
 ) -> dict[str, pd.DataFrame | pd.Timestamp]:
-    prepared = prepare_businessmap_dataset(workbook_path)
+    if prepared is None:
+        prepared = prepare_businessmap_dataset(workbook_path)
     bm = prepared["bm"]
     reference_date = prepared["reference_date"]
 
