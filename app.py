@@ -151,8 +151,6 @@ st.set_page_config(
 # ── session state init ────────────────────────────────────────────────────────
 if "manifest" not in st.session_state:
     st.session_state.manifest = mf.load_manifest()
-if "trained_paths" not in st.session_state:
-    st.session_state.trained_paths = mf.active_paths(st.session_state.manifest)
 
 manifest: dict = st.session_state.manifest
 
@@ -177,32 +175,25 @@ with st.sidebar:
 
     st.divider()
 
-    # Estado del dataset en sidebar
     n_active = sum(
         1 for f in manifest["files"]
         if f["active"] and not f.get("missing")
     )
-    current_paths = mf.active_paths(manifest)
-    needs_retrain = current_paths != st.session_state.trained_paths
+    st.success(f"✅ {n_active} archivo{'s' if n_active != 1 else ''} activo{'s' if n_active != 1 else ''}")
 
-    if needs_retrain:
-        st.warning("⚠️ Dataset modificado.\nVe a **Gestión de datos** y pulsa **Reentrenar**.")
-    else:
-        st.success(f"✅ {n_active} archivo{'s' if n_active != 1 else ''} activo{'s' if n_active != 1 else ''}")
-
-# ── pipeline (cached por trained_paths + parámetros) ─────────────────────────
+# ── pipeline (cached por active_paths + parámetros) ──────────────────────────
 @st.cache_data(show_spinner="Ejecutando pipeline de análisis…")
 def compute_artifacts(
-    trained_paths: tuple[str, ...],
+    active_paths: tuple[str, ...],
     rate_window: int,
     horizon: int,
 ) -> tuple[dict, dict]:
     """Carga y combina los archivos activos, ejecuta el pipeline completo."""
-    if not trained_paths:
+    if not active_paths:
         raise ValueError("No hay archivos activos en el dataset.")
 
     all_bm, all_links, all_subtasks = [], [], []
-    for path in trained_paths:
+    for path in active_paths:
         bm, links, subtasks = load_businessmap_workbook(path)
         all_bm.append(bm)
         all_links.append(links)
@@ -246,13 +237,10 @@ def compute_artifacts(
 
 try:
     base_artifacts, segmented = compute_artifacts(
-        st.session_state.trained_paths, rate_window, horizon
+        mf.active_paths(st.session_state.manifest), rate_window, horizon
     )
 except Exception as exc:
     st.error(f"❌ Error al procesar el dataset: {exc}")
-    if needs_retrain:
-        st.info("Puede que un archivo activo haya desaparecido del disco. "
-                "Ve a **Gestión de datos**, revisa la lista y pulsa **Reentrenar**.")
     st.stop()
 
 # ── resolve active artifacts by segment ───────────────────────────────────────
@@ -271,7 +259,7 @@ else:
     scenarios   = art.get("forecast_scenarios",         pd.DataFrame())
 
 ref_date  = base_artifacts["reference_date"].strftime("%d/%m/%Y")
-n_trained = len(st.session_state.trained_paths)
+n_trained = n_active
 n_total   = len(base_artifacts["bm"])
 n_open    = int(base_artifacts["bm"]["Actual End Date"].isna().sum())
 n_closed  = n_total - n_open
@@ -283,7 +271,6 @@ st.caption(
     f"Ventana: **{rate_window} días** · "
     f"Horizonte: **{horizon} días** · "
     f"Segmento: **{selected_type}** · "
-    f"Archivos en uso: **{n_trained}** · "
     f"Total tarjetas: **{n_total}** ({n_open} abiertas / {n_closed} cerradas)"
 )
 
@@ -368,9 +355,7 @@ with tab1:
             st.subheader("Detalle por responsable")
             disp = _prepare(forecast_df, [
                 "Owner", "current_wip", "forecast_wip",
-                "forecast_wip_low", "forecast_wip_high",
                 "arrival_rate_per_day", "completion_rate_per_day",
-                "expected_arrivals", "expected_completions",
                 "status", "status_reason",
             ])
             if _lbl("status") in disp.columns:
@@ -379,14 +364,10 @@ with tab1:
                 disp[_lbl("status_reason")] = _translate_status_reason(disp[_lbl("status_reason")])
             styled = _safe_style(disp, _lbl("status"), FORECAST_COLOR_ES).format(
                 {
-                    _lbl("arrival_rate_per_day"):    "{:.3f}",
-                    _lbl("completion_rate_per_day"): "{:.3f}",
+                    _lbl("arrival_rate_per_day"):    "{:.2f}",
+                    _lbl("completion_rate_per_day"): "{:.2f}",
                     _lbl("forecast_wip"):            "{:.1f}",
-                    _lbl("forecast_wip_low"):        "{:.1f}",
-                    _lbl("forecast_wip_high"):       "{:.1f}",
                     _lbl("current_wip"):             "{:.0f}",
-                    _lbl("expected_arrivals"):        "{:.1f}",
-                    _lbl("expected_completions"):     "{:.1f}",
                 },
                 na_rep="-",
             )
@@ -406,7 +387,14 @@ with tab1:
             for col in scen_disp.columns:
                 if col.startswith("Estado"):
                     scen_disp[col] = _translate_status(scen_disp[col])
-            st.dataframe(scen_disp, use_container_width=True)
+            scen_styler = scen_disp.style
+            for col in scen_disp.columns:
+                if col.startswith("Estado"):
+                    scen_styler = scen_styler.apply(
+                        lambda s: _color_col(s, FORECAST_COLOR_ES), subset=[col]
+                    )
+            st.dataframe(scen_styler, use_container_width=True,
+                         height=min(500, len(scen_disp) * 35 + 38))
 
         if selected_type == "Todos":
             st.divider()
@@ -502,18 +490,21 @@ with tab2:
             if filter_level else task_alerts
         )
 
-        col_charts, col_table = st.columns([1, 1.5])
+        chart_filtered = filtered.copy()
+        chart_filtered["nivel_es"] = chart_filtered["alert_level"].map(
+            lambda v: STATUS_LABELS.get(v, v)
+        )
 
-        with col_charts:
+        col_hist, col_bar = st.columns(2)
+
+        with col_hist:
             st.subheader("Antigüedad vs tiempo habitual histórico")
-            chart_filtered = filtered.copy()
-            chart_filtered["nivel_es"] = chart_filtered["alert_level"].map(
-                lambda v: STATUS_LABELS.get(v, v)
-            )
+            x_max = max(3.5, float(chart_filtered["age_vs_benchmark"].quantile(0.95)) * 1.1)
             fig2 = px.histogram(
                 chart_filtered, x="age_vs_benchmark",
                 color="nivel_es", color_discrete_map=ALERT_COLOR_ES,
                 nbins=20,
+                range_x=[0, x_max],
                 labels={
                     "age_vs_benchmark": "Veces el tiempo habitual",
                     "count":            "Tareas",
@@ -521,12 +512,13 @@ with tab2:
                 },
             )
             fig2.add_vline(x=1, line_dash="dash", line_color="gray",
-                           annotation_text="= tiempo habitual")
+                           annotation_text="= habitual")
             fig2.add_vline(x=3, line_dash="dot",  line_color="#C8553D",
-                           annotation_text="3× tiempo habitual")
+                           annotation_text="3×")
             fig2.update_layout(margin=dict(l=0, r=0, t=10, b=0))
             st.plotly_chart(fig2, use_container_width=True)
 
+        with col_bar:
             st.subheader("Distribución por fase Kanban")
             col_dist = (
                 chart_filtered.groupby(["Column Name", "nivel_es"])
@@ -540,35 +532,33 @@ with tab2:
             fig3.update_layout(xaxis_tickangle=-30, margin=dict(l=0, r=0, t=10, b=0))
             st.plotly_chart(fig3, use_container_width=True)
 
-        with col_table:
-            st.subheader("Alertas por tarea")
-            disp2 = _prepare(filtered, [
-                "Card ID", "Owner", "Column Name", "Type Name",
-                "age_days", "age_vs_benchmark", "days_since_last_moved",
-                "benchmark_median_days", "benchmark_p90_days",
-                "alert_score", "alert_level", "alert_reason",
-            ])
-            if _lbl("alert_level") in disp2.columns:
-                disp2[_lbl("alert_level")] = _translate_status(disp2[_lbl("alert_level")])
-            if _lbl("alert_reason") in disp2.columns:
-                disp2[_lbl("alert_reason")] = _translate_alert_reason(disp2[_lbl("alert_reason")])
-            styled2 = _safe_style(disp2, _lbl("alert_level"), ALERT_COLOR_ES).format(
-                {
-                    _lbl("age_days"):              "{:.1f}",
-                    _lbl("age_vs_benchmark"):      "{:.2f}x",
-                    _lbl("days_since_last_moved"): "{:.1f}",
-                    _lbl("benchmark_median_days"): "{:.1f}",
-                    _lbl("benchmark_p90_days"):    "{:.1f}",
-                    _lbl("alert_score"):           "{:.0f}",
-                },
-                na_rep="-",
-            )
-            st.dataframe(styled2, use_container_width=True, height=560)
+        st.subheader("Alertas por tarea")
+        disp2 = _prepare(filtered, [
+            "Card ID", "Owner", "Column Name", "Type Name",
+            "age_days", "age_vs_benchmark", "days_since_last_moved",
+            "alert_score", "alert_level", "alert_reason",
+        ])
+        if _lbl("alert_level") in disp2.columns:
+            disp2[_lbl("alert_level")] = _translate_status(disp2[_lbl("alert_level")])
+        if _lbl("alert_reason") in disp2.columns:
+            disp2[_lbl("alert_reason")] = _translate_alert_reason(disp2[_lbl("alert_reason")])
+        styled2 = _safe_style(disp2, _lbl("alert_level"), ALERT_COLOR_ES).format(
+            {
+                _lbl("age_days"):              "{:.1f}",
+                _lbl("age_vs_benchmark"):      "{:.2f}x",
+                _lbl("days_since_last_moved"): "{:.1f}",
+                _lbl("alert_score"):           "{:.0f}",
+            },
+            na_rep="-",
+        )
+        st.dataframe(styled2, use_container_width=True,
+                     height=min(500, len(disp2) * 35 + 38))
 
 # ═════════════════════════════════════════════════════════════════════════════
 # TAB 3 — CUELLOS DE BOTELLA
 # ═════════════════════════════════════════════════════════════════════════════
 with tab3:
+    # ── gráficos lado a lado ───────────────────────────────────────────────────
     col_left, col_right = st.columns(2)
 
     with col_left:
@@ -579,21 +569,21 @@ with tab3:
             n_bt_o = int((owner_bns["bottleneck_status"] == "bottleneck").sum())
             n_rk_o = int((owner_bns["bottleneck_status"] == "risk").sum())
             n_ok_o = int((owner_bns["bottleneck_status"] == "healthy").sum())
-
             m1, m2, m3 = st.columns(3)
             m1.metric("🔴 Crítico",   n_bt_o)
             m2.metric("🟠 En riesgo", n_rk_o)
             m3.metric("🟢 OK",        n_ok_o)
-
             bn_chart_df = owner_bns.copy()
-            bn_chart_df["situacion_es"] = bn_chart_df["bottleneck_status"].map(lambda v: STATUS_LABELS.get(v, v))
+            bn_chart_df["situacion_es"] = bn_chart_df["bottleneck_status"].map(
+                lambda v: STATUS_LABELS.get(v, v)
+            )
             fig4 = px.bar(
                 bn_chart_df.sort_values("bottleneck_score", ascending=True),
                 x="bottleneck_score", y="Owner",
                 color="situacion_es", color_discrete_map=BOTTLENECK_COLOR_ES,
                 orientation="h",
                 labels={
-                    "bottleneck_score": "Puntuación de cuello de botella",
+                    "bottleneck_score": "Puntuación",
                     "Owner":            "Responsable",
                     "situacion_es":     "Situación",
                 },
@@ -602,36 +592,15 @@ with tab3:
             fig4.update_layout(margin=dict(l=0, r=10, t=10, b=0))
             st.plotly_chart(fig4, use_container_width=True)
 
-            disp3 = _prepare(owner_bns, [
-                "Owner", "open_tasks", "bottleneck_tasks", "risk_tasks",
-                "currently_blocked_tasks", "stagnant_tasks",
-                "old_open_tasks", "dependency_risk_tasks",
-                "median_open_age_days", "max_open_age_days",
-                "dominant_column", "forecast_status",
-                "bottleneck_score", "bottleneck_status",
-            ])
-            for col in (_lbl("forecast_status"), _lbl("bottleneck_status")):
-                if col in disp3.columns:
-                    disp3[col] = _translate_status(disp3[col])
-            styled3 = _safe_style(
-                disp3, _lbl("bottleneck_status"), BOTTLENECK_COLOR_ES
-            ).format(
-                {
-                    _lbl("median_open_age_days"): "{:.1f}",
-                    _lbl("max_open_age_days"):    "{:.1f}",
-                    _lbl("bottleneck_score"):     "{:.0f}",
-                },
-                na_rep="-",
-            )
-            st.dataframe(styled3, use_container_width=True)
-
     with col_right:
-        st.subheader("Por columna Kanban")
+        st.subheader("Por fase Kanban")
         if column_bns.empty:
             st.info("Sin datos.")
         else:
             col_chart_df = column_bns.copy()
-            col_chart_df["situacion_es"] = col_chart_df["bottleneck_status"].map(lambda v: STATUS_LABELS.get(v, v))
+            col_chart_df["situacion_es"] = col_chart_df["bottleneck_status"].map(
+                lambda v: STATUS_LABELS.get(v, v)
+            )
             fig5 = px.bar(
                 col_chart_df.sort_values("bottleneck_tasks", ascending=True),
                 x="bottleneck_tasks", y="column_name",
@@ -646,26 +615,44 @@ with tab3:
             fig5.update_layout(margin=dict(l=0, r=10, t=10, b=0))
             st.plotly_chart(fig5, use_container_width=True)
 
-            disp4 = _prepare(column_bns, [
-                "column_name", "open_tasks", "bottleneck_tasks", "risk_tasks",
-                "owners_involved", "median_age_days", "max_age_days",
-                "mean_days_since_last_moved",
-                "dependency_risk_tasks", "currently_blocked_tasks",
-                "bottleneck_status",
-            ])
-            if _lbl("bottleneck_status") in disp4.columns:
-                disp4[_lbl("bottleneck_status")] = _translate_status(disp4[_lbl("bottleneck_status")])
-            styled4 = _safe_style(
-                disp4, _lbl("bottleneck_status"), BOTTLENECK_COLOR_ES
-            ).format(
-                {
-                    _lbl("median_age_days"):            "{:.1f}",
-                    _lbl("max_age_days"):               "{:.1f}",
-                    _lbl("mean_days_since_last_moved"): "{:.1f}",
-                },
-                na_rep="-",
-            )
-            st.dataframe(styled4, use_container_width=True)
+    # ── tablas a ancho completo ────────────────────────────────────────────────
+    if not owner_bns.empty:
+        st.divider()
+        st.subheader("Detalle por responsable")
+        disp3 = _prepare(owner_bns, [
+            "Owner", "open_tasks", "bottleneck_tasks", "risk_tasks",
+            "currently_blocked_tasks", "median_open_age_days",
+            "dominant_column", "forecast_status", "bottleneck_status",
+        ])
+        for col in (_lbl("forecast_status"), _lbl("bottleneck_status")):
+            if col in disp3.columns:
+                disp3[col] = _translate_status(disp3[col])
+        styled3 = _safe_style(disp3, _lbl("bottleneck_status"), BOTTLENECK_COLOR_ES).format(
+            {_lbl("median_open_age_days"): "{:.1f}"},
+            na_rep="-",
+        )
+        st.dataframe(styled3, use_container_width=True,
+                     height=min(500, len(disp3) * 35 + 38))
+
+    if not column_bns.empty:
+        st.divider()
+        st.subheader("Detalle por fase Kanban")
+        disp4 = _prepare(column_bns, [
+            "column_name", "open_tasks", "bottleneck_tasks", "risk_tasks",
+            "owners_involved", "median_age_days", "mean_days_since_last_moved",
+            "currently_blocked_tasks", "bottleneck_status",
+        ])
+        if _lbl("bottleneck_status") in disp4.columns:
+            disp4[_lbl("bottleneck_status")] = _translate_status(disp4[_lbl("bottleneck_status")])
+        styled4 = _safe_style(disp4, _lbl("bottleneck_status"), BOTTLENECK_COLOR_ES).format(
+            {
+                _lbl("median_age_days"):            "{:.1f}",
+                _lbl("mean_days_since_last_moved"): "{:.1f}",
+            },
+            na_rep="-",
+        )
+        st.dataframe(styled4, use_container_width=True,
+                     height=min(500, len(disp4) * 35 + 38))
 
     if selected_type == "Todos":
         st.divider()
@@ -679,7 +666,7 @@ with tab3:
                     type_bt_ov.rename(columns={
                         "type_name":          "Tipo",
                         "open_tasks":         "Abiertas",
-                        "bottleneck_tasks":   "Bottleneck",
+                        "bottleneck_tasks":   "Críticas",
                         "risk_tasks":         "Riesgo",
                         "healthy_tasks":      "Saludables",
                         "bottleneck_owners":  "Propietarios BN",
@@ -779,81 +766,3 @@ with tab4:
                 help="Eliminar este archivo del dataset",
             )
 
-    st.divider()
-
-    # ── sección: subir nuevo archivo ──────────────────────────────────────────
-    st.subheader("⬆️ Añadir nuevos datos")
-    st.caption(
-        "Sube un export de BusinessMap con las hojas **Businessmap**, **Links** y **Subtasks**. "
-        "El nuevo archivo se sumará al dataset actual."
-    )
-
-    uploaded = st.file_uploader(
-        "Selecciona un archivo Excel de BusinessMap",
-        type=["xlsx"],
-        key="data_uploader",
-    )
-
-    if uploaded is not None:
-        file_bytes = uploaded.read()
-
-        with st.spinner("Validando esquema…"):
-            errors = mf.validate_schema(file_bytes)
-
-        if errors:
-            st.error("❌ El archivo no es compatible:")
-            for err in errors:
-                st.markdown(f"- {err}")
-        else:
-            st.success("✅ Esquema válido")
-            if st.button("➕ Añadir al dataset", type="primary"):
-                updated, err_msg = mf.add_file(
-                    st.session_state.manifest,
-                    uploaded.name,
-                    file_bytes,
-                )
-                if err_msg:
-                    st.warning(err_msg)
-                else:
-                    st.session_state.manifest = updated
-                    st.success(f"«{uploaded.name}» añadido correctamente.")
-                    st.rerun()
-
-    st.divider()
-
-    # ── sección: reentrenamiento ──────────────────────────────────────────────
-    st.subheader("🔄 Reentrenamiento del pipeline")
-
-    current_paths = mf.active_paths(st.session_state.manifest)
-    needs_retrain = current_paths != st.session_state.trained_paths
-
-    n_current = len(current_paths)
-    n_trained  = len(st.session_state.trained_paths)
-
-    last_hash = st.session_state.manifest.get("last_trained_hash")
-
-    if needs_retrain:
-        st.warning(
-            f"La selección de archivos ha cambiado "
-            f"({n_trained} → {n_current} archivo{'s' if n_current != 1 else ''}). "
-            "Pulsa **Reentrenar** para actualizar los resultados del dashboard."
-        )
-    else:
-        st.info(
-            f"✅ El pipeline está actualizado con **{n_current} archivo{'s' if n_current != 1 else ''}**."
-        )
-
-    if st.button(
-        "🔄 Reentrenar pipeline",
-        type="primary",
-        disabled=not needs_retrain,
-        help="Ejecuta el pipeline con todos los archivos activos seleccionados.",
-    ):
-        with st.spinner("Reentrenando pipeline con el dataset combinado…"):
-            st.session_state.trained_paths = current_paths
-            mf.set_trained_hash(
-                st.session_state.manifest,
-                mf.active_hash(st.session_state.manifest),
-            )
-        st.success("✅ Pipeline actualizado. Los resultados se han refrescado.")
-        st.rerun()

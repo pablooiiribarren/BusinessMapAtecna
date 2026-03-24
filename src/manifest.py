@@ -67,7 +67,7 @@ def _create_manifest() -> dict:
             {
                 "id":            BASE_ID,
                 "original_name": BASE_FILE.name,
-                "path":          str(BASE_FILE),
+                "path":          BASE_FILE.as_posix(),
                 "upload_date":   datetime.now(timezone.utc).isoformat(),
                 "hash":          _hash_file(BASE_FILE),
                 "active":        True,
@@ -174,7 +174,7 @@ def add_file(
     manifest["files"].append({
         "id":            file_id,
         "original_name": original_name,
-        "path":          str(dest),
+        "path":          dest.as_posix(),
         "upload_date":   datetime.now(timezone.utc).isoformat(),
         "hash":          file_hash,
         "active":        True,
