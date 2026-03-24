@@ -9,6 +9,16 @@
       "active": true,
       "is_base": true,
       "missing": false
+    },
+    {
+      "id": "e5e74051",
+      "original_name": "DatosBusquedaAvanzada20250323.xlsx",
+      "path": "data/raw/DatosBusquedaAvanzada20250323.xlsx",
+      "upload_date": "2026-03-24T12:05:30.141594+00:00",
+      "hash": "e5e74051fa3bac2fef9690b314214645",
+      "active": true,
+      "is_base": false,
+      "missing": false
     }
   ],
   "last_trained_hash": "929d64068c5020651e4ff08beab9f23e"
