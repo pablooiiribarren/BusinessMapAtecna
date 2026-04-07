@@ -1,94 +1,111 @@
-# BusinessMapAtecna
+# BusinessMap — Sistema de IA para Planificación Operativa
 
-## 🎯 Objetivo 1 — Predicción de carga futura
+Capa de inteligencia complementaria a [BusinessMap](https://businessmap.io) que transforma datos históricos de trabajo en alertas operativas automáticas: predicción de carga por persona, detección de desviaciones por tarea y localización proactiva de cuellos de botella.
 
-Forecast del WIP por responsable en horizonte H (ej: 5, 10, 20 días).
+> **No sustituye al PM.** No toma decisiones automáticas sobre personas. No modifica BusinessMap ni su flujo. Es un sistema de apoyo a la planificación.
 
-Esto requiere:
+---
 
--   Modelo de arrivals rate (nuevas tareas asignadas)
+## Objetivos
 
--   Modelo de completions rate (velocidad histórica de cierre)
+### 1. Predicción de carga futura por responsable
+Calcula tasas de entrada/salida por persona en una ventana configurable y proyecta cuántas tareas tendrá cada responsable en los próximos N días, indicando si su carga estará en rango saludable, en riesgo o en sobrecarga.
 
-## 🎯 Objetivo 2 — ETA real por tarea
+**Qué no hace BusinessMap:** su Monte Carlo opera sobre throughput agregado del equipo. No proyecta carga individual ni alerta sobre sobrecarga futura por persona.
 
-Estimación individual del tiempo restante hasta cierre.
+### 2. Detección de desviación por tarea
+Evalúa cada tarea abierta contra benchmarks históricos de duración (por owner, tipo e historial). No predice ETA — detecta cuándo una tarea se desvía significativamente de lo esperado.
 
-Esto requiere:
+**Por qué detección y no ETA:** la dispersión de duraciones en los datos es muy alta (desde minutos hasta meses para el mismo Type Name). Un modelo de ETA con esta granularidad produciría medianas disfrazadas, no predicciones útiles. La detección de desviación es más robusta, más útil operativamente y más honesta metodológicamente.
 
--   Modelo de regresión sobre duración
+**Qué no hace BusinessMap:** tiene Aging WIP Chart como visualización pasiva, pero no calcula benchmarks por owner/tipo, no puntúa severidad y no genera alertas automáticas.
 
--   Features de contexto: owner, tipo, edad, estado, histórico similar
+### 3. Detección de cuellos de botella
+Combina múltiples señales (envejecimiento, estancamiento, acumulación por columna, presión de carga del owner) en una puntuación de riesgo por tarea, por responsable y por fase Kanban.
 
-## 🎯 Objetivo 3 — Detección de cuellos de botella
+**Limitación conocida:** el bloqueo explícito es escaso en los datos (10 tarjetas activas). El sistema se apoya en señales implícitas que son más abundantes y fiables.
 
-Detección temprana de acumulación anómala.
+**Qué no hace BusinessMap:** ofrece CFD y Blocker Charts para interpretación manual, pero no detecta automáticamente, no puntúa severidad y no genera alertas proactivas.
 
-Esto requiere:
+### Relación entre objetivos
+Los tres se refuerzan: la desviación de una tarea (obj. 2) alimenta la detección de cuellos de botella (obj. 3). El estado de carga de un responsable (obj. 1) se inyecta como señal en las alertas de sus tareas.
 
--   Métricas de envejecimiento
+---
 
--   Distribución por estados
+## Datos
 
--   Análisis de dependencias (Links)
+| Métrica | Valor |
+|---------|-------|
+| Tarjetas únicas (combinadas) | 1.740 |
+| Responsables | 20 |
+| Tipos de proyecto | 3 (Externo, Interno, Producto) |
+| Tareas cerradas con duración válida | 1.645 |
+| Rango temporal | Abril 2024 — Marzo 2026 |
+| Fases Kanban con timestamps | 7 |
 
--   Señales de riesgo agregadas
+---
 
-## ⚠️ Punto clave:
+## Estructura del proyecto
 
-El objetivo 1 y 3 se apoyan en el 2.
+```
+BusinessMapAtecna/
+├── app.py                    # Dashboard Streamlit
+├── requirements.txt
+├── data/
+│   ├── manifest.json         # Fuente de verdad de datasets activos
+│   └── raw/                  # Exports de BusinessMap (.xlsx)
+├── notebooks/
+│   ├── 01_crispdm_baseline   # Baseline histórico (referencia)
+│   ├── 02_pipeline_artifacts # Ejecución del pipeline modular
+│   ├── 03_forecast_dashboard # Análisis de carga futura
+│   ├── 04_bottlenecks        # Alertas y cuellos de botella
+│   └── 05_type_segmentation  # Análisis por tipo de proyecto
+└── src/
+    ├── data_prep.py          # Carga, limpieza, feature engineering
+    ├── forecast.py           # Tasas, WIP futuro, escenarios
+    ├── bottlenecks.py        # Benchmarks, alertas, scores
+    ├── type_segmentation.py  # Análisis segmentado por Type Name
+    ├── manifest.py           # Gestión de datasets
+    └── pipeline.py           # Orquestación del pipeline
+```
 
-Si sabes cuánto tardan realmente las tareas, puedes:
+La lógica reusable vive en `src/`. Los notebooks se quedan con narrativa CRISP-DM, EDA, visualizaciones e interpretación.
 
--   estimar carga futura mejor
+---
 
--   detectar desviaciones antes
-
-## Estructura recomendada
-
-El notebook no deberia ser la unica fuente de logica. La estructura recomendada a partir de ahora es:
-
-- `src/data_prep.py`: carga, limpieza, parseo de fechas y features base
-- `src/forecast.py`: calculo de tasas, forecast de WIP y escenarios
-- `src/bottlenecks.py`: benchmarks, alertas y agregados de cuellos de botella
-- `src/type_segmentation.py`: reconstruccion y comparacion por `Type Name`
-- `src/pipeline.py`: orquestacion del pipeline base
-
-Uso minimo desde notebook:
+## Uso rápido
 
 ```python
-from pathlib import Path
-import sys
-
-project_root = Path.cwd().resolve()
-if project_root.name == "notebooks":
-    project_root = project_root.parent
-if str(project_root) not in sys.path:
-    sys.path.insert(0, str(project_root))
-
 from src.pipeline import run_baseline_pipeline
 
 artifacts = run_baseline_pipeline(
-    workbook_path=PATH_XLSX,
+    workbook_path="data/raw/DatosBusquedaAvanzada20250208.xlsx",
     rate_window_days=60,
     dashboard_horizon_days=5,
     scenario_horizons=(5, 10, 20),
 )
 
-bm = artifacts["bm"]
-forecast_dashboard_export = artifacts["forecast_dashboard_export"]
-forecast_scenarios = artifacts["forecast_scenarios"]
-task_alerts = artifacts["task_alerts"]
-owner_bottlenecks = artifacts["owner_bottlenecks"]
-column_bottlenecks = artifacts["column_bottlenecks"]
-type_bottlenecks = artifacts["type_bottlenecks"]
+# Artefactos principales
+forecast = artifacts["forecast_dashboard_export"]   # Carga por owner
+alerts = artifacts["task_alerts"]                    # Desviaciones por tarea
+owners = artifacts["owner_bottlenecks"]              # Cuellos por responsable
+columns = artifacts["column_bottlenecks"]            # Cuellos por fase
 ```
 
-El notebook deberia quedarse con:
+Dashboard:
+```bash
+pip install -r requirements.txt
+streamlit run app.py
+```
 
-- narrativa CRISP-DM
-- checks de calidad y EDA
-- visualizaciones
-- interpretacion de resultados
+---
 
-La logica reusable y estable deberia vivir en `src/`.
+## Stack
+
+Python 3.11+ · Pandas · NumPy · Plotly · Streamlit · openpyxl
+
+---
+
+## Estado actual
+
+Prototipo funcional con pipeline completo, dashboard interactivo y gestión de datasets. En fase de reenfoque: mejora del modelado (actualmente heurístico/determinista) y del dashboard (storytelling con datos).
