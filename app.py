@@ -4,6 +4,8 @@ import pandas as pd
 import plotly.express as px
 import streamlit as st
 
+import auth
+import db
 import src.manifest as mf
 from src.data_prep import load_businessmap_workbook, prepare_from_frames
 from src.pipeline import run_baseline_pipeline
@@ -148,6 +150,11 @@ st.set_page_config(
     layout="wide",
 )
 
+# ── auth ──────────────────────────────────────────────────────────────────────
+db.init_schema()
+auth.ensure_initial_admin()
+current_user = auth.require_auth()
+
 # ── session state init ────────────────────────────────────────────────────────
 if "manifest" not in st.session_state:
     st.session_state.manifest = mf.load_manifest()
@@ -156,6 +163,10 @@ manifest: dict = st.session_state.manifest
 
 # ── sidebar ───────────────────────────────────────────────────────────────────
 with st.sidebar:
+    st.caption(f"👤 {current_user['display_name']}")
+    if st.button("Cerrar sesión", use_container_width=True):
+        auth.logout()
+    st.divider()
     st.title("⚙️ Configuración")
 
     rate_window = st.slider(
