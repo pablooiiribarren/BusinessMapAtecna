@@ -8,8 +8,14 @@ import pandas as pd
 
 
 def _load_dotenv_from_file() -> None:
+    script_dir = Path(__file__).resolve().parent
     cwd = Path.cwd()
-    for directory in (cwd, *cwd.parents):
+    seen = set()
+    candidates = [script_dir, *script_dir.parents, cwd, *cwd.parents]
+    for directory in candidates:
+        if directory in seen:
+            continue
+        seen.add(directory)
         env_path = directory / ".env"
         if env_path.exists():
             with env_path.open("r", encoding="utf-8") as env_file:
