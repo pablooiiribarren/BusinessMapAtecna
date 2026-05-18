@@ -163,7 +163,7 @@ manifest: dict = st.session_state.manifest
 
 # ── sidebar ───────────────────────────────────────────────────────────────────
 with st.sidebar:
-    st.caption(f"👤 {current_user['display_name']}")
+    st.caption(f"👤 {current_user['username']}")
     if st.button("Cerrar sesión", use_container_width=True):
         auth.logout()
     st.divider()
@@ -360,7 +360,7 @@ with tab1:
                 height=max(350, len(forecast_df) * 30),
             )
             fig.update_layout(margin=dict(l=0, r=10, t=10, b=0), legend_title_text="Estado")
-            st.plotly_chart(fig, use_container_width=True)
+            st.plotly_chart(fig, width="stretch")
 
         with col_table:
             st.subheader("Detalle por responsable")
@@ -450,7 +450,7 @@ with tab1:
                         title=f"Previsión de tareas por tipo ({horizon} días)",
                     )
                     fig_t.update_layout(showlegend=False, margin=dict(t=30, b=0))
-                    st.plotly_chart(fig_t, use_container_width=True)
+                    st.plotly_chart(fig_t, width="stretch")
                 with col_b:
                     st.dataframe(
                         type_fore.rename(columns={
@@ -527,7 +527,7 @@ with tab2:
             fig2.add_vline(x=3, line_dash="dot",  line_color="#C8553D",
                            annotation_text="3×")
             fig2.update_layout(margin=dict(l=0, r=0, t=10, b=0))
-            st.plotly_chart(fig2, use_container_width=True)
+            st.plotly_chart(fig2, width="stretch")
 
         with col_bar:
             st.subheader("Distribución por fase Kanban")
@@ -541,7 +541,7 @@ with tab2:
                 labels={"n": "Tareas", "Column Name": "Fase", "nivel_es": "Nivel de alerta"},
             )
             fig3.update_layout(xaxis_tickangle=-30, margin=dict(l=0, r=0, t=10, b=0))
-            st.plotly_chart(fig3, use_container_width=True)
+            st.plotly_chart(fig3, width="stretch")
 
         st.subheader("Alertas por tarea")
         disp2 = _prepare(filtered, [
@@ -601,7 +601,7 @@ with tab3:
                 height=max(300, len(owner_bns) * 30),
             )
             fig4.update_layout(margin=dict(l=0, r=10, t=10, b=0))
-            st.plotly_chart(fig4, use_container_width=True)
+            st.plotly_chart(fig4, width="stretch")
 
     with col_right:
         st.subheader("Por fase Kanban")
@@ -624,7 +624,7 @@ with tab3:
                 },
             )
             fig5.update_layout(margin=dict(l=0, r=10, t=10, b=0))
-            st.plotly_chart(fig5, use_container_width=True)
+            st.plotly_chart(fig5, width="stretch")
 
     # ── tablas a ancho completo ────────────────────────────────────────────────
     if not owner_bns.empty:
@@ -704,7 +704,7 @@ with tab3:
                     barmode="stack",
                 )
                 fig6.update_layout(margin=dict(t=10, b=0))
-                st.plotly_chart(fig6, use_container_width=True)
+                st.plotly_chart(fig6, width="stretch")
 
 # ═════════════════════════════════════════════════════════════════════════════
 # TAB 4 — GESTIÓN DE DATOS
@@ -741,7 +741,7 @@ with tab4:
         with col_chk:
             chk_key = f"chk_{f['id']}"
             st.checkbox(
-                label="",
+                label="Activo",
                 value=f["active"],
                 key=chk_key,
                 on_change=_on_toggle,

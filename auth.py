@@ -1,19 +1,12 @@
 from __future__ import annotations
 
-import os
 from datetime import datetime, timezone
-from pathlib import Path
 from typing import Optional
 
 import bcrypt
 import streamlit as st
 
-from db import get_engine, is_available
-
-_env_path = Path(__file__).resolve().parent / ".env"
-if _env_path.exists():
-    from dotenv import load_dotenv
-    load_dotenv(_env_path, override=False)
+from db import get_engine, is_available, _get_secret
 
 
 def _hash_password(password: str) -> str:
@@ -82,9 +75,9 @@ def ensure_initial_admin() -> None:
     if count > 0:
         return
 
-    username = os.getenv("INITIAL_ADMIN_USER", "admin")
-    password = os.getenv("INITIAL_ADMIN_PASSWORD", "changeme")
-    name = os.getenv("INITIAL_ADMIN_NAME", "Administrador")
+    username = _get_secret("INITIAL_ADMIN_USER") or "admin"
+    password = _get_secret("INITIAL_ADMIN_PASSWORD") or "changeme"
+    name = _get_secret("INITIAL_ADMIN_NAME") or "Administrador"
     created = create_user(username, password, name)
     if created:
         print(f"[auth] Usuario admin inicial creado: '{username}'")

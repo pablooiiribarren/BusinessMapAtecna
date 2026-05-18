@@ -36,18 +36,41 @@ _load_dotenv_from_file()
 _engine = None
 
 
+def _get_secret(key: str) -> str | None:
+    try:
+        import streamlit as st
+        if key in st.secrets:
+            return st.secrets[key]
+    except Exception:
+        pass
+    return os.getenv(key)
+
+
 def get_engine():
     global _engine
     if _engine is not None:
         return _engine
 
-    database_url = os.getenv("DATABASE_URL")
+    database_url = _get_secret("DATABASE_URL")
     if not database_url:
         return None
 
     try:
+        from urllib.parse import urlparse, unquote
         from sqlalchemy import create_engine
-        _engine = create_engine(database_url, pool_pre_ping=True)
+        from sqlalchemy.engine import URL
+
+        p = urlparse(database_url)
+        sa_url = URL.create(
+            drivername="postgresql+psycopg2",
+            username=p.username,
+            password=unquote(p.password or ""),
+            host=p.hostname,
+            port=p.port,
+            database=(p.path or "/postgres").lstrip("/"),
+            query={"sslmode": "require"},
+        )
+        _engine = create_engine(sa_url, pool_pre_ping=True)
         return _engine
     except Exception as exc:
         print(f"[db] No se pudo conectar a PostgreSQL: {exc}")
