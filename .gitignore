@@ -9,3 +9,8 @@ data/manifest.json
 .env
 __pycache__/
 *.pyc
+
+# datos sensibles
+data/raw/*.xlsx
+data/raw/*.csv
+data/raw/*.xls
