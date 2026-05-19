@@ -10,6 +10,7 @@ def build_forecast_inputs(
     df: pd.DataFrame,
     reference_date: pd.Timestamp,
     rate_window_days: int = 60,
+    halflife_days: float = 14.0,
 ) -> dict[str, object]:
     bm = df.copy()
     bm["Created Date"] = pd.to_datetime(bm["Created At"], errors="coerce").dt.floor("D")
@@ -53,10 +54,32 @@ def build_forecast_inputs(
         .fillna(0)
     )
 
-    arrival_rate = arrivals_daily.mean(axis=0).rename("arrival_rate_per_day")
-    arrival_rate_std = arrivals_daily.std(axis=0).rename("arrival_rate_std_per_day")
-    completion_rate = completions_daily.mean(axis=0).rename("completion_rate_per_day")
-    completion_rate_std = completions_daily.std(axis=0).rename("completion_rate_std_per_day")
+    arrival_rate = (
+        arrivals_daily.ewm(halflife=halflife_days, adjust=True)
+        .mean()
+        .iloc[-1]
+        .rename("arrival_rate_per_day")
+    )
+    arrival_rate_std = (
+        arrivals_daily.ewm(halflife=halflife_days, adjust=True)
+        .std()
+        .iloc[-1]
+        .fillna(0.0)
+        .rename("arrival_rate_std_per_day")
+    )
+    completion_rate = (
+        completions_daily.ewm(halflife=halflife_days, adjust=True)
+        .mean()
+        .iloc[-1]
+        .rename("completion_rate_per_day")
+    )
+    completion_rate_std = (
+        completions_daily.ewm(halflife=halflife_days, adjust=True)
+        .std()
+        .iloc[-1]
+        .fillna(0.0)
+        .rename("completion_rate_std_per_day")
+    )
     wip_now = (
         bm.loc[bm["Actual End Date"].isna() & bm["Owner"].notna()]
         .groupby("Owner")["Card ID"]
@@ -98,7 +121,7 @@ def forecast_wip(df: pd.DataFrame, horizon_days: int) -> pd.DataFrame:
         net_flow_std = (
             forecast["arrival_rate_std_per_day"] ** 2
             + forecast["completion_rate_std_per_day"] ** 2
-        ) ** 0.5 * horizon_days
+        ) ** 0.5 * np.sqrt(horizon_days)
         forecast["forecast_wip_low"] = (forecast["forecast_wip"] - net_flow_std).clip(lower=0)
         forecast["forecast_wip_high"] = forecast["forecast_wip"] + net_flow_std
 
@@ -286,3 +309,68 @@ def build_forecast_scenarios(
         )
 
     return forecast_scenarios
+
+
+def bootstrap_forecast_wip(
+    forecast_inputs: dict,
+    horizon_days: int,
+    n_simulations: int = 1000,
+    quantiles: tuple[float, ...] = (0.1, 0.5, 0.9),
+    random_state: int | None = None,
+) -> pd.DataFrame:
+    """
+    Simula trayectorias de WIP futuro remuestreando con reemplazo del histórico diario.
+
+    Parámetros
+    ----------
+    forecast_inputs : dict
+        El dict devuelto por build_forecast_inputs. Debe contener al menos:
+        'arrivals_daily', 'completions_daily', 'forecast_base'.
+    horizon_days : int
+        Número de días a simular hacia adelante.
+    n_simulations : int
+        Número de trayectorias a generar por owner.
+    quantiles : tuple[float, ...]
+        Cuantiles a reportar. Por defecto (0.1, 0.5, 0.9).
+    random_state : int | None
+        Para reproducibilidad. Si None, no es determinista.
+
+    Devuelve
+    --------
+    pd.DataFrame con columnas: ['Owner', 'wip_p10', 'wip_p50', 'wip_p90', ...]
+    una columna por cuantil pedido, ordenadas por wip_p50 descendente.
+    """
+    arrivals_daily: pd.DataFrame = forecast_inputs["arrivals_daily"]
+    completions_daily: pd.DataFrame = forecast_inputs["completions_daily"]
+    forecast_base: pd.DataFrame = forecast_inputs["forecast_base"]
+
+    rng = np.random.default_rng(random_state)
+    owners = arrivals_daily.columns.tolist()
+    quantile_col_names = [f"wip_p{int(q * 100)}" for q in quantiles]
+
+    rows = []
+    for owner in owners:
+        arr = arrivals_daily[owner].values
+        comp = completions_daily[owner].values
+        current_wip = (
+            forecast_base.loc[owner, "current_wip"]
+            if owner in forecast_base.index
+            else 0
+        )
+
+        arr_samples = rng.choice(arr, size=(n_simulations, horizon_days), replace=True)
+        comp_samples = rng.choice(comp, size=(n_simulations, horizon_days), replace=True)
+        wip_finals = np.maximum(
+            0,
+            current_wip + arr_samples.sum(axis=1) - comp_samples.sum(axis=1),
+        )
+
+        row: dict = {"Owner": owner}
+        for q, col_name in zip(quantiles, quantile_col_names):
+            row[col_name] = float(np.quantile(wip_finals, q))
+        rows.append(row)
+
+    result = pd.DataFrame(rows, columns=["Owner"] + quantile_col_names)
+    if "wip_p50" in result.columns:
+        result = result.sort_values("wip_p50", ascending=False)
+    return result.reset_index(drop=True)

@@ -20,6 +20,7 @@ def run_baseline_pipeline(
     dashboard_horizon_days: int = 5,
     scenario_horizons: Iterable[int] = (5, 10, 20),
     min_group_size: int = 5,
+    halflife_days: float = 14.0,
     *,
     prepared: dict | None = None,
 ) -> dict[str, pd.DataFrame | pd.Timestamp]:
@@ -32,6 +33,7 @@ def run_baseline_pipeline(
         bm,
         reference_date=reference_date,
         rate_window_days=rate_window_days,
+        halflife_days=halflife_days,
     )
     forecast_base = forecast_inputs["forecast_base"]
     forecast_reference_date = forecast_inputs["forecast_reference_date"]
