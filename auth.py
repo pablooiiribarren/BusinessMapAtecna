@@ -66,24 +66,6 @@ def _update_last_login(username: str) -> None:
             {"ts": datetime.now(timezone.utc), "u": username}
         )
 
-
-def ensure_initial_admin() -> None:
-    if not is_available():
-        return
-    engine = get_engine()
-    import pandas as pd
-    count = pd.read_sql("SELECT COUNT(*) as n FROM users", engine).iloc[0]["n"]
-    if count > 0:
-        return
-
-    username = _get_secret("INITIAL_ADMIN_USER") or "admin"
-    password = _get_secret("INITIAL_ADMIN_PASSWORD") or "changeme"
-    created = create_user(username, password, username, role="admin")
-    if created:
-        print(f"[auth] Usuario admin inicial creado: '{username}'")
-    else:
-        print("[auth] No se pudo crear el usuario admin inicial.")
-
 def show_login_page() -> None:
     col1, col2, col3 = st.columns([1, 2, 1])
     with col2:
