@@ -153,7 +153,6 @@ st.set_page_config(
 # ── auth ──────────────────────────────────────────────────────────────────────
 db.init_schema()
 auth.ensure_initial_admin()
-auth.ensure_initial_guest()
 current_user = auth.require_auth()
 
 # ── sidebar ───────────────────────────────────────────────────────────────────

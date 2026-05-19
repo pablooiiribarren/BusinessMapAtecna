@@ -84,17 +84,6 @@ def ensure_initial_admin() -> None:
     else:
         print("[auth] No se pudo crear el usuario admin inicial.")
 
-
-def ensure_initial_guest() -> None:
-    if not is_available():
-        return
-    if get_user("invitado") is not None:
-        return
-    created = create_user("invitado", "atecna", "Invitado", role="viewer")
-    if created:
-        print("[auth] Usuario invitado creado.")
-
-
 def show_login_page() -> None:
     col1, col2, col3 = st.columns([1, 2, 1])
     with col2:
