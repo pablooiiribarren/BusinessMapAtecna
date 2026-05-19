@@ -156,12 +156,6 @@ auth.ensure_initial_admin()
 auth.ensure_initial_guest()
 current_user = auth.require_auth()
 
-# ── session state init ────────────────────────────────────────────────────────
-if "manifest" not in st.session_state:
-    st.session_state.manifest = mf.load_manifest()
-
-manifest: dict = st.session_state.manifest
-
 # ── sidebar ───────────────────────────────────────────────────────────────────
 with st.sidebar:
     st.caption(f"👤 {current_user['username']}")
@@ -184,14 +178,6 @@ with st.sidebar:
     st.divider()
 
     selected_type = st.radio("Segmento a analizar", TYPE_OPTIONS, index=0)
-
-    st.divider()
-
-    n_active = sum(
-        1 for f in manifest["files"]
-        if f["active"] and not f.get("missing")
-    )
-    st.success(f"✅ {n_active} archivo{'s' if n_active != 1 else ''} activo{'s' if n_active != 1 else ''}")
 
 # ── pipeline (cached por db_cache_key + parámetros) ──────────────────────────
 @st.cache_data(show_spinner="Ejecutando pipeline de análisis…")
@@ -249,7 +235,7 @@ else:
     scenarios   = art.get("forecast_scenarios",         pd.DataFrame())
 
 ref_date  = base_artifacts["reference_date"].strftime("%d/%m/%Y")
-n_trained = n_active
+n_trained = len(db.load_uploaded_files())
 n_total   = len(base_artifacts["bm"])
 n_open    = int(base_artifacts["bm"]["Actual End Date"].isna().sum())
 n_closed  = n_total - n_open
@@ -690,70 +676,22 @@ with tab3:
 # ═════════════════════════════════════════════════════════════════════════════
 with tab4:
 
-    # ── callbacks ─────────────────────────────────────────────────────────────
-    def _on_toggle(file_id: str, key: str) -> None:
-        new_val = st.session_state[key]
-        st.session_state.manifest = mf.toggle_active(
-            st.session_state.manifest, file_id, new_val
-        )
-
-    def _on_delete(file_id: str) -> None:
-        st.session_state.manifest = mf.remove_file(
-            st.session_state.manifest, file_id
-        )
-
     # ── sección: archivos registrados ─────────────────────────────────────────
-    st.subheader("📁 Archivos en el dataset")
-    st.caption(
-        "El archivo base siempre está activo. "
-        "Los archivos adicionales se pueden activar/desactivar o eliminar."
-    )
+    st.subheader("📁 Datasets en la base de datos")
+    st.caption("Todos los datasets están activos. El dashboard siempre calcula con todos los datos combinados.")
 
-    files = st.session_state.manifest["files"]
+    uploaded_files = db.load_uploaded_files()
 
-    for f in files:
-        is_base    = f.get("is_base", False)
-        is_missing = f.get("missing", False)
-
-        col_chk, col_info, col_del = st.columns([0.5, 5, 0.7])
-
-        with col_chk:
-            chk_key = f"chk_{f['id']}"
-            st.checkbox(
-                label="Activo",
-                value=f["active"],
-                key=chk_key,
-                on_change=_on_toggle,
-                args=(f["id"], chk_key),
-                disabled=is_base or is_missing,
-                label_visibility="collapsed",
-            )
-
-        with col_info:
-            upload_dt = f.get("upload_date", "")[:10]
-            if is_base:
-                badge = "🔒 Base"
-            elif is_missing:
-                badge = "❌ Faltante"
-            elif f["active"]:
-                badge = "✅ Activo"
-            else:
-                badge = "⏸️ Inactivo"
-
+    if not uploaded_files:
+        st.info("No hay datasets registrados todavía.")
+    else:
+        for f in uploaded_files:
+            upload_dt = str(f.get("uploaded_at") or "")[:10]
+            badge = "🔒 Base" if f.get("is_base") else "📄"
             st.markdown(
-                f"**{f['original_name']}** &nbsp; `{badge}` &nbsp; "
+                f"{badge} **{f['original_name']}** &nbsp; "
                 f"<span style='color:gray;font-size:0.85em'>{upload_dt}</span>",
                 unsafe_allow_html=True,
-            )
-
-        with col_del:
-            st.button(
-                "🗑️",
-                key=f"del_{f['id']}",
-                on_click=_on_delete,
-                args=(f["id"],),
-                disabled=is_base,
-                help="Eliminar este archivo del dataset",
             )
 
     # ── sección: subir nuevo archivo (solo admin) ─────────────────────────────

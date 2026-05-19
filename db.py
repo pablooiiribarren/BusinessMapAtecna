@@ -391,6 +391,19 @@ def load_subtasks_from_db() -> pd.DataFrame:
     return df.drop(columns=[c for c in ("id", "file_source", "ingested_at") if c in df.columns])
 
 
+def load_uploaded_files() -> list[dict]:
+    """Devuelve la lista de archivos registrados en uploaded_files."""
+    engine = get_engine()
+    if engine is None:
+        return []
+    df = pd.read_sql(
+        "SELECT id, original_name, uploaded_at, uploaded_by, is_base "
+        "FROM uploaded_files ORDER BY uploaded_at ASC",
+        engine,
+    )
+    return df.to_dict("records")
+
+
 def db_has_cards() -> bool:
     """True si la BD tiene al menos una fila en cards."""
     engine = get_engine()
