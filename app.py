@@ -192,42 +192,20 @@ with st.sidebar:
     )
     st.success(f"✅ {n_active} archivo{'s' if n_active != 1 else ''} activo{'s' if n_active != 1 else ''}")
 
-# ── pipeline (cached por active_paths + parámetros) ──────────────────────────
+# ── pipeline (cached por db_cache_key + parámetros) ──────────────────────────
 @st.cache_data(show_spinner="Ejecutando pipeline de análisis…")
 def compute_artifacts(
-    active_paths: tuple[str, ...],
+    db_cache_key: str,
     rate_window: int,
     horizon: int,
 ) -> tuple[dict, dict]:
-    """Carga y combina los archivos activos, ejecuta el pipeline completo."""
-    if not active_paths:
-        raise ValueError("No hay archivos activos en el dataset.")
+    """Carga datos desde BD y ejecuta el pipeline completo."""
+    if not db.db_has_cards():
+        raise ValueError("La base de datos no tiene datos. Ejecuta seed_db.py o sube un archivo.")
 
-    all_bm, all_links, all_subtasks = [], [], []
-    for path in active_paths:
-        bm, links, subtasks = load_businessmap_workbook(path)
-        all_bm.append(bm)
-        all_links.append(links)
-        all_subtasks.append(subtasks)
-
-    if len(all_bm) == 1:
-        merged_bm, merged_links, merged_subtasks = all_bm[0], all_links[0], all_subtasks[0]
-    else:
-        merged_bm = (
-            pd.concat(all_bm, ignore_index=True)
-            .drop_duplicates(subset=["Card ID"], keep="last")
-            .reset_index(drop=True)
-        )
-        merged_links = (
-            pd.concat(all_links, ignore_index=True)
-            .drop_duplicates()
-            .reset_index(drop=True)
-        )
-        merged_subtasks = (
-            pd.concat(all_subtasks, ignore_index=True)
-            .drop_duplicates()
-            .reset_index(drop=True)
-        )
+    merged_bm       = db.load_bm_from_db()
+    merged_links    = db.load_links_from_db()
+    merged_subtasks = db.load_subtasks_from_db()
 
     prepared = prepare_from_frames(merged_bm, merged_links, merged_subtasks)
     base = run_baseline_pipeline(
@@ -247,9 +225,9 @@ def compute_artifacts(
 
 
 try:
-    base_artifacts, segmented = compute_artifacts(
-        mf.active_paths(st.session_state.manifest), rate_window, horizon
-    )
+    from datetime import datetime
+    db_cache_key = st.session_state.get("db_cache_key", datetime.now().isoformat())
+    base_artifacts, segmented = compute_artifacts(db_cache_key, rate_window, horizon)
 except Exception as exc:
     st.error(f"❌ Error al procesar el dataset: {exc}")
     st.stop()
@@ -776,4 +754,64 @@ with tab4:
                 disabled=is_base,
                 help="Eliminar este archivo del dataset",
             )
+
+    # ── sección: subir nuevo archivo ──────────────────────────────────────────
+    st.divider()
+    st.subheader("📤 Subir nuevo export de BusinessMap")
+
+    uploaded_file = st.file_uploader(
+        "Sube un nuevo export de BusinessMap (.xlsx)",
+        type=["xlsx"],
+        help="Archivo Excel con las hojas Businessmap, Links y Subtasks.",
+    )
+
+    if uploaded_file is not None:
+        file_bytes = uploaded_file.read()
+
+        errors = mf.validate_schema(file_bytes)
+        if errors:
+            for err in errors:
+                st.error(err)
+        else:
+            updated_manifest, err_msg = mf.add_file(
+                st.session_state.manifest, uploaded_file.name, file_bytes
+            )
+            if err_msg:
+                st.warning(err_msg)
+            else:
+                st.session_state.manifest = updated_manifest
+
+                import io
+                import hashlib
+                file_hash = hashlib.sha256(file_bytes).hexdigest()
+                file_id = file_hash[:8]
+
+                try:
+                    bm, links, subtasks = load_businessmap_workbook(io.BytesIO(file_bytes))
+
+                    db.upsert_file({
+                        "id": file_id,
+                        "original_name": uploaded_file.name,
+                        "file_path": f"data/uploads/{uploaded_file.name}",
+                        "file_hash": file_hash,
+                        "uploaded_by": current_user["username"],
+                        "active": True,
+                        "is_base": False,
+                    })
+
+                    n_cards = db.upsert_cards_raw(bm, file_id)
+                    n_links = db.insert_links_raw(links, file_id)
+                    n_subs  = db.insert_subtasks_raw(subtasks, file_id)
+
+                    from datetime import datetime
+                    st.session_state["db_cache_key"] = datetime.now().isoformat()
+                    st.cache_data.clear()
+
+                    st.success(
+                        f"Archivo procesado. "
+                        f"{n_cards} tarjetas, {n_links} links, {n_subs} subtasks cargados en BD."
+                    )
+                    st.rerun()
+                except Exception as exc:
+                    st.error(f"Error al cargar en BD: {exc}")
 

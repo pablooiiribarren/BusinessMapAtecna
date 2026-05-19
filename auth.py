@@ -77,8 +77,7 @@ def ensure_initial_admin() -> None:
 
     username = _get_secret("INITIAL_ADMIN_USER") or "admin"
     password = _get_secret("INITIAL_ADMIN_PASSWORD") or "changeme"
-    name = _get_secret("INITIAL_ADMIN_NAME") or "Administrador"
-    created = create_user(username, password, name)
+    created = create_user(username, password, username)
     if created:
         print(f"[auth] Usuario admin inicial creado: '{username}'")
     else:
