@@ -34,7 +34,7 @@ def get_user(username: str) -> Optional[dict]:
         return dict(row) if row else None
 
 
-def create_user(username: str, password: str, display_name: str) -> bool:
+def create_user(username: str, password: str, display_name: str, role: str = "admin") -> bool:
     engine = get_engine()
     if engine is None:
         return False
@@ -42,12 +42,13 @@ def create_user(username: str, password: str, display_name: str) -> bool:
     with engine.begin() as conn:
         try:
             conn.execute(text("""
-                INSERT INTO users (username, password_hash, display_name)
-                VALUES (:u, :ph, :dn)
+                INSERT INTO users (username, password_hash, display_name, role)
+                VALUES (:u, :ph, :dn, :role)
             """), {
                 "u": username,
                 "ph": _hash_password(password),
                 "dn": display_name,
+                "role": role,
             })
             return True
         except Exception:
@@ -77,11 +78,21 @@ def ensure_initial_admin() -> None:
 
     username = _get_secret("INITIAL_ADMIN_USER") or "admin"
     password = _get_secret("INITIAL_ADMIN_PASSWORD") or "changeme"
-    created = create_user(username, password, username)
+    created = create_user(username, password, username, role="admin")
     if created:
         print(f"[auth] Usuario admin inicial creado: '{username}'")
     else:
         print("[auth] No se pudo crear el usuario admin inicial.")
+
+
+def ensure_initial_guest() -> None:
+    if not is_available():
+        return
+    if get_user("invitado") is not None:
+        return
+    created = create_user("invitado", "atecna", "Invitado", role="viewer")
+    if created:
+        print("[auth] Usuario invitado creado.")
 
 
 def show_login_page() -> None:
@@ -110,6 +121,7 @@ def show_login_page() -> None:
                 st.session_state["current_user"] = {
                     "username": user["username"],
                     "display_name": user["display_name"],
+                    "role": user.get("role", "admin"),
                 }
                 _update_last_login(username.strip())
                 st.rerun()

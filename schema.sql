@@ -1,14 +1,17 @@
 -- Schema de BusinessMap Atecna Analytics — v2 (BD como fuente real)
 
--- ── Usuarios (sin cambios) ─────────────────────────────────────────────────
+-- ── Usuarios ──────────────────────────────────────────────────────────────
 CREATE TABLE IF NOT EXISTS users (
     id              SERIAL PRIMARY KEY,
     username        VARCHAR(64) UNIQUE NOT NULL,
     password_hash   VARCHAR(255) NOT NULL,
     display_name    VARCHAR(128) NOT NULL,
     created_at      TIMESTAMPTZ DEFAULT NOW(),
-    last_login      TIMESTAMPTZ
+    last_login      TIMESTAMPTZ,
+    role            VARCHAR(16) DEFAULT 'admin'
 );
+
+ALTER TABLE users ADD COLUMN IF NOT EXISTS role VARCHAR(16) DEFAULT 'admin';
 
 -- ── Archivos subidos (sin cambios) ──────────────────────────────────────────
 CREATE TABLE IF NOT EXISTS uploaded_files (

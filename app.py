@@ -153,6 +153,7 @@ st.set_page_config(
 # ── auth ──────────────────────────────────────────────────────────────────────
 db.init_schema()
 auth.ensure_initial_admin()
+auth.ensure_initial_guest()
 current_user = auth.require_auth()
 
 # ── session state init ────────────────────────────────────────────────────────
@@ -755,7 +756,11 @@ with tab4:
                 help="Eliminar este archivo del dataset",
             )
 
-    # ── sección: subir nuevo archivo ──────────────────────────────────────────
+    # ── sección: subir nuevo archivo (solo admin) ─────────────────────────────
+    if current_user.get("role") != "admin":
+        st.info("Solo los administradores pueden subir archivos.")
+        st.stop()
+
     st.divider()
     st.subheader("📤 Subir nuevo export de BusinessMap")
 
