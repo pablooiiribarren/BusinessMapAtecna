@@ -26,6 +26,24 @@ MIN_GROUP_SIZE: int = 5
 HISTORICAL_LIMITED_THRESHOLD: int = 10
 
 
+def assign_tier(n: int) -> str:
+    """
+    Asigna el eligibility tier basado en un conteo de tareas.
+
+    >>> assign_tier(12)
+    'reliable'
+    >>> assign_tier(7)
+    'limited'
+    >>> assign_tier(3)
+    'insufficient'
+    """
+    if n >= HISTORICAL_LIMITED_THRESHOLD:
+        return "reliable"
+    if n >= MIN_GROUP_SIZE:
+        return "limited"
+    return "insufficient"
+
+
 @dataclass(frozen=True)
 class DurationBenchmarks:
     owner_type: pd.DataFrame
@@ -177,12 +195,5 @@ def compute_owner_reliability(
     result = n_total_by_owner.merge(agg, on="Owner", how="outer")
     result["n_effective"] = result["n_effective"].fillna(0).astype(int)
 
-    def _tier(n: int) -> str:
-        if n >= HISTORICAL_LIMITED_THRESHOLD:
-            return "reliable"
-        if n >= MIN_GROUP_SIZE:
-            return "limited"
-        return "insufficient"
-
-    result["eligibility_tier"] = result["n_effective"].apply(_tier)
+    result["eligibility_tier"] = result["n_effective"].apply(assign_tier)
     return result.sort_values("Owner").reset_index(drop=True)
