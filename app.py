@@ -10,6 +10,8 @@ import src.manifest as mf
 from src.data_prep import load_businessmap_workbook, prepare_from_frames
 from src.pipeline import run_baseline_pipeline
 from src.type_segmentation import run_type_segmented_analysis
+from src.intake import build_intake_recommendation
+from src.reliability import compute_owner_reliability
 
 # ── constants ─────────────────────────────────────────────────────────────────
 FORECAST_COLOR = {
@@ -183,7 +185,7 @@ def compute_artifacts(
     db_cache_key: str,
     rate_window: int,
     horizon: int,
-) -> tuple[dict, dict]:
+) -> tuple[dict, dict, pd.DataFrame]:
     """Carga datos desde BD y ejecuta el pipeline completo."""
     if not db.db_has_cards():
         raise ValueError("La base de datos no tiene datos. Ejecuta seed_db.py o sube un archivo.")
@@ -206,13 +208,14 @@ def compute_artifacts(
         dashboard_horizon_days=horizon,
         scenario_horizons=(5, 10, 20),
     )
-    return base, segmented
+    owner_reliability = compute_owner_reliability(base["bm"])
+    return base, segmented, owner_reliability
 
 
 try:
     from datetime import datetime
     db_cache_key = st.session_state.get("db_cache_key", datetime.now().isoformat())
-    base_artifacts, segmented = compute_artifacts(db_cache_key, rate_window, horizon)
+    base_artifacts, segmented, owner_reliability = compute_artifacts(db_cache_key, rate_window, horizon)
 except Exception as exc:
     st.error(f"❌ Error al procesar el dataset: {exc}")
     st.stop()
@@ -274,10 +277,9 @@ def _safe_style(df: pd.DataFrame, col: str, color_map: dict) -> pd.io.formats.st
 
 
 # ── tabs ──────────────────────────────────────────────────────────────────────
-tab1, tab2, tab3, tab4 = st.tabs([
+tab1, tab2, tab3 = st.tabs([
     "📈 Predicción de carga",
-    "⏱️ Tiempo real por tarea",
-    "🚧 Cuellos de botella",
+    "🆕 Nuevo proyecto entrante",
     "🗂️ Gestión de datos",
 ])
 
@@ -429,250 +431,202 @@ with tab1:
                         use_container_width=True,
                     )
 
+        st.divider()
+        with st.expander("📊 Detalle de fiabilidad por responsable (global, todos los tipos)"):
+            st.caption(
+                "Desvío histórico medio de cada responsable frente a la mediana del tipo en el que trabaja, "
+                "ponderado por número de tareas. Calculado sobre todo el histórico, no afectado por el filtro "
+                "de tipo del menú lateral."
+            )
+            if owner_reliability.empty:
+                st.info("No hay datos suficientes para calcular fiabilidad.")
+            else:
+                rel_view = owner_reliability.copy()
+                rel_view["Desvío histórico"] = rel_view["deviation_weighted"].apply(
+                    lambda x: f"{x*100:+.0f}%" if pd.notna(x) else "—"
+                )
+                tier_label_map = {
+                    "reliable": "Fiable",
+                    "limited": "Histórico limitado",
+                    "insufficient": "Histórico insuficiente",
+                }
+                rel_view["Fiabilidad"] = rel_view["eligibility_tier"].map(tier_label_map)
+                rel_view = rel_view.rename(columns={
+                    "Owner": "Responsable",
+                    "n_total": "Tareas totales",
+                    "n_effective": "Tareas con histórico válido",
+                })[
+                    ["Responsable", "Tareas totales", "Tareas con histórico válido",
+                     "Desvío histórico", "Fiabilidad"]
+                ]
+                st.dataframe(rel_view, use_container_width=True, hide_index=True)
+
 # ═════════════════════════════════════════════════════════════════════════════
-# TAB 2 — ESTIMACIÓN DE TIEMPO REAL POR TAREA
+# TAB 2 — NUEVO PROYECTO ENTRANTE (INTAKE)
 # ═════════════════════════════════════════════════════════════════════════════
 with tab2:
-    if task_alerts.empty:
-        st.info("No hay tareas abiertas para el segmento seleccionado.")
+    st.subheader("🆕 Recomendación para un nuevo proyecto entrante")
+    st.caption(
+        "Introduce el tipo de proyecto y la fecha de inicio prevista. "
+        "El sistema estima la duración esperada y propone candidatos."
+    )
+
+    available_types = sorted(base_artifacts["bm"]["Type Name"].dropna().unique())
+    if not available_types:
+        st.info("No hay tipos de proyecto en el dataset.")
     else:
-        n_bt = int((task_alerts["alert_level"] == "bottleneck").sum())
-        n_rk = int((task_alerts["alert_level"] == "risk").sum())
-        n_ok = int((task_alerts["alert_level"] == "healthy").sum())
+        col_inp1, col_inp2 = st.columns(2)
+        with col_inp1:
+            intake_type = st.selectbox(
+                "Tipo de proyecto",
+                available_types,
+                key="intake_type",
+            )
+        with col_inp2:
+            default_start = (base_artifacts["reference_date"] + pd.Timedelta(days=14)).date()
+            intake_start = st.date_input(
+                "Fecha de inicio prevista",
+                value=default_start,
+                key="intake_start",
+            )
 
-        c1, c2, c3, c4 = st.columns(4)
-        c1.metric("Tareas abiertas", len(task_alerts))
-        c2.metric("🔴 Críticas",     n_bt)
-        c3.metric("🟠 En riesgo",    n_rk)
-        c4.metric("🟢 Sin alertas",  n_ok)
+        intake_start_ts = pd.Timestamp(intake_start)
 
+        try:
+            rec = build_intake_recommendation(
+                df=base_artifacts["bm"],
+                forecast_base=base_artifacts["forecast_base"],
+                type_name=intake_type,
+                start_date=intake_start_ts,
+                reference_date=base_artifacts["reference_date"],
+                rate_window_days=rate_window,
+            )
+        except ValueError as e:
+            st.error(str(e))
+            st.stop()
+
+        # ── Bloque: estimación de duración del tipo ──────────────────────────
         st.divider()
+        te = rec.type_estimation
 
-        _ALERT_OPTIONS_ES = {
-            "Tareas críticas": "bottleneck",
-            "En riesgo":       "risk",
-            "Sin alertas":     "healthy",
-        }
-        filter_level_es = st.multiselect(
-            "Filtrar por nivel de alerta",
-            options=list(_ALERT_OPTIONS_ES.keys()),
-            default=["Tareas críticas", "En riesgo"],
-        )
-        filter_level = [_ALERT_OPTIONS_ES[k] for k in filter_level_es]
-        filtered = (
-            task_alerts[task_alerts["alert_level"].isin(filter_level)]
-            if filter_level else task_alerts
-        )
-
-        chart_filtered = filtered.copy()
-        chart_filtered["nivel_es"] = chart_filtered["alert_level"].map(
-            lambda v: STATUS_LABELS.get(v, v)
-        )
-
-        col_hist, col_bar = st.columns(2)
-
-        with col_hist:
-            st.subheader("Antigüedad vs tiempo habitual histórico")
-            x_max = max(3.5, float(chart_filtered["age_vs_benchmark"].quantile(0.95)) * 1.1)
-            fig2 = px.histogram(
-                chart_filtered, x="age_vs_benchmark",
-                color="nivel_es", color_discrete_map=ALERT_COLOR_ES,
-                nbins=20,
-                range_x=[0, x_max],
-                labels={
-                    "age_vs_benchmark": "Veces el tiempo habitual",
-                    "count":            "Tareas",
-                    "nivel_es":         "Nivel de alerta",
-                },
+        if te.n_type == 0:
+            st.warning(
+                f"No hay histórico suficiente de **{intake_type}** "
+                "tras el filtro de duración (≥1 día)."
             )
-            fig2.add_vline(x=1, line_dash="dash", line_color="gray",
-                           annotation_text="= habitual")
-            fig2.add_vline(x=3, line_dash="dot",  line_color="#C8553D",
-                           annotation_text="3×")
-            fig2.update_layout(margin=dict(l=0, r=0, t=10, b=0))
-            st.plotly_chart(fig2, width="stretch")
+        else:
+            c1, c2, c3 = st.columns(3)
+            c1.metric("Duración mediana esperada", f"{te.type_median:.0f} días")
+            c2.metric("Cola larga (P90)", f"{te.type_p90:.0f} días")
+            c3.metric("Proyectos analizados", te.n_type)
 
-        with col_bar:
-            st.subheader("Distribución por fase Kanban")
-            col_dist = (
-                chart_filtered.groupby(["Column Name", "nivel_es"])
-                .size().reset_index(name="n")
-            )
-            fig3 = px.bar(
-                col_dist, x="Column Name", y="n",
-                color="nivel_es", color_discrete_map=ALERT_COLOR_ES,
-                labels={"n": "Tareas", "Column Name": "Fase", "nivel_es": "Nivel de alerta"},
-            )
-            fig3.update_layout(xaxis_tickangle=-30, margin=dict(l=0, r=0, t=10, b=0))
-            st.plotly_chart(fig3, width="stretch")
+            if te.dispersion_level == "alta":
+                st.warning(f"⚠️ {te.dispersion_warning}")
+            elif te.dispersion_level == "media":
+                st.info(
+                    f"Dispersión media. La cola larga (P90 = {te.type_p90:.0f} días) "
+                    "es notablemente superior a la mediana."
+                )
 
-        st.subheader("Alertas por tarea")
-        disp2 = _prepare(filtered, [
-            "Card ID", "Owner", "Column Name", "Type Name",
-            "age_days", "age_vs_benchmark", "days_since_last_moved",
-            "alert_score", "alert_level", "alert_reason",
-        ])
-        if _lbl("alert_level") in disp2.columns:
-            disp2[_lbl("alert_level")] = _translate_status(disp2[_lbl("alert_level")])
-        if _lbl("alert_reason") in disp2.columns:
-            disp2[_lbl("alert_reason")] = _translate_alert_reason(disp2[_lbl("alert_reason")])
-        styled2 = _safe_style(disp2, _lbl("alert_level"), ALERT_COLOR_ES).format(
-            {
-                _lbl("age_days"):              "{:.1f}",
-                _lbl("age_vs_benchmark"):      "{:.2f}x",
-                _lbl("days_since_last_moved"): "{:.1f}",
-                _lbl("alert_score"):           "{:.0f}",
-            },
-            na_rep="-",
+        md = rec.metadata
+        st.caption(
+            f"Basado en **{md['n_effective_dataset']}** proyectos con duración registrada "
+            f"≥ {md['min_duration_days']:.0f} día. "
+            f"**{md['excluded_pct_dataset']:.1f}%** del histórico excluido por duración no significativa "
+            "(uso administrativo del Kanban)."
         )
-        st.dataframe(styled2, use_container_width=True,
-                     height=min(500, len(disp2) * 35 + 38))
+
+        # ── Ranking 1: candidatos con histórico ─────────────────────────────
+        st.divider()
+        st.subheader(f"👥 Candidatos con histórico de {intake_type}")
+
+        if rec.candidates_with_history.empty:
+            st.info("Ningún responsable tiene 5 o más proyectos cerrados de este tipo y capacidad para iniciar nuevos.")
+        else:
+            cwh = rec.candidates_with_history.copy()
+            tier_label_map = {
+                "reliable": "✅",
+                "limited": "⚠️ Histórico limitado",
+            }
+            cwh_view = pd.DataFrame({
+                "Responsable":             cwh["Owner"],
+                "Carga prevista":          cwh["forecast_wip_at_start"].round(1),
+                "Estado":                  cwh["forecast_status"].map({
+                    "healthy": "🟢 Capacidad OK",
+                    "risk":    "🟠 En riesgo",
+                }),
+                "Proyectos del tipo":      cwh["n_in_type"],
+                "Mediana del responsable": cwh["owner_median_in_type"].apply(lambda x: f"{x:.0f} días"),
+                "Mediana del tipo":        f"{te.type_median:.0f} días" if te.n_type > 0 else "—",
+                "Fiabilidad":              cwh["tier_in_type"].map(tier_label_map),
+            })
+            st.dataframe(cwh_view, use_container_width=True, hide_index=True)
+
+        # ── Ranking 2: otros candidatos disponibles ─────────────────────────
+        st.divider()
+        st.subheader("👤 Otros candidatos disponibles")
+        st.caption("Responsables con capacidad pero sin histórico suficiente del tipo seleccionado.")
+
+        if rec.candidates_without_history.empty:
+            st.info("Ningún otro responsable disponible cumple los criterios.")
+        else:
+            cwoh = rec.candidates_without_history.copy()
+            cwoh_view = pd.DataFrame({
+                "Responsable":    cwoh["Owner"],
+                "Carga prevista": cwoh["forecast_wip_at_start"].round(1),
+                "Estado":         cwoh["forecast_status"].map({
+                    "healthy": "🟢 Capacidad OK",
+                    "risk":    "🟠 En riesgo",
+                }),
+                "Tareas totales": cwoh["n_total"],
+                "Contexto":       cwoh["label"],
+            })
+            st.dataframe(cwoh_view, use_container_width=True, hide_index=True)
+
+        # ── Nivel 2: expander metodológico ───────────────────────────────────
+        st.divider()
+        with st.expander("ℹ️ ¿Cómo se calcula esto?"):
+            st.markdown(f"""
+**Estimación de duración del tipo**
+- Se calcula la mediana y el percentil 90 de la duración (en días) de todos los proyectos cerrados del tipo seleccionado.
+- Solo entran proyectos con duración registrada ≥ 1 día. Las tareas con duración < 1 día corresponden a uso administrativo retroactivo del Kanban y distorsionan los promedios.
+- El indicador de dispersión es el ratio P90/mediana. Si supera 2,5, se muestra advertencia: el tipo agrupa proyectos muy heterogéneos.
+
+**Candidatos con histórico**
+- Solo aparecen responsables con al menos 5 proyectos cerrados del tipo (tras el filtro de duración).
+- "Carga prevista" es la previsión de tareas en curso del responsable al inicio del proyecto (horizonte = {md['horizon_days']} días desde la fecha de referencia).
+- Solo se muestran responsables con estado **Capacidad OK** o **En riesgo**. Los responsables sobrecargados o sin actividad reciente quedan fuera.
+- Orden: primero por menor carga prevista; en caso de empate, por menor desvío respecto a la mediana del tipo.
+- "Mediana del responsable" muestra cuánto duran sus proyectos de este tipo, en días. Comparar con "Mediana del tipo" para ver si tiende a ser más rápido o más lento que el promedio.
+- Etiqueta "Histórico limitado" si tiene entre 5 y 9 proyectos del tipo; sin etiqueta si tiene 10 o más.
+
+**Otros candidatos disponibles**
+- Responsables con capacidad pero sin 5 proyectos cerrados del tipo.
+- "Contexto" distingue dos casos: responsables con histórico global en otros tipos (etiqueta `Sin histórico de X (N en otros tipos)`) vs. responsables sin histórico relevante en ningún tipo (etiqueta `Sin histórico`).
+- Orden: primero por menor carga prevista; en caso de empate, por mayor histórico global.
+            """)
+
+        # ── Nivel 3: expander de parámetros ──────────────────────────────────
+        with st.expander("🔧 Datos y supuestos"):
+            st.markdown(f"""
+| Parámetro | Valor |
+|---|---|
+| Fecha de referencia del dataset | {md['reference_date'].strftime('%Y-%m-%d')} |
+| Fecha de inicio del proyecto | {md['start_date'].strftime('%Y-%m-%d')} |
+| Horizonte de capacidad (días) | {md['horizon_days']} |
+| Ventana de cálculo de tasas (días) | {md['rate_window_days']} |
+| Filtro mínimo de duración (días) | {md['min_duration_days']:.0f} |
+| Tamaño mínimo de grupo para histórico válido | {md['min_group_size']} |
+| Umbral "fiable" (≥ N tareas) | 10 |
+| Proyectos totales con duración registrada | {md['n_total_dataset']} |
+| Proyectos efectivos tras filtro | {md['n_effective_dataset']} |
+| % excluido por duración < 1 día | {md['excluded_pct_dataset']:.1f}% |
+            """)
 
 # ═════════════════════════════════════════════════════════════════════════════
-# TAB 3 — CUELLOS DE BOTELLA
+# TAB 3 — GESTIÓN DE DATOS
 # ═════════════════════════════════════════════════════════════════════════════
 with tab3:
-    # ── gráficos lado a lado ───────────────────────────────────────────────────
-    col_left, col_right = st.columns(2)
-
-    with col_left:
-        st.subheader("Por responsable")
-        if owner_bns.empty:
-            st.info("Sin datos.")
-        else:
-            n_bt_o = int((owner_bns["bottleneck_status"] == "bottleneck").sum())
-            n_rk_o = int((owner_bns["bottleneck_status"] == "risk").sum())
-            n_ok_o = int((owner_bns["bottleneck_status"] == "healthy").sum())
-            m1, m2, m3 = st.columns(3)
-            m1.metric("🔴 Crítico",   n_bt_o)
-            m2.metric("🟠 En riesgo", n_rk_o)
-            m3.metric("🟢 OK",        n_ok_o)
-            bn_chart_df = owner_bns.copy()
-            bn_chart_df["situacion_es"] = bn_chart_df["bottleneck_status"].map(
-                lambda v: STATUS_LABELS.get(v, v)
-            )
-            fig4 = px.bar(
-                bn_chart_df.sort_values("bottleneck_score", ascending=True),
-                x="bottleneck_score", y="Owner",
-                color="situacion_es", color_discrete_map=BOTTLENECK_COLOR_ES,
-                orientation="h",
-                labels={
-                    "bottleneck_score": "Puntuación",
-                    "Owner":            "Responsable",
-                    "situacion_es":     "Situación",
-                },
-                height=max(300, len(owner_bns) * 30),
-            )
-            fig4.update_layout(margin=dict(l=0, r=10, t=10, b=0))
-            st.plotly_chart(fig4, width="stretch")
-
-    with col_right:
-        st.subheader("Por fase Kanban")
-        if column_bns.empty:
-            st.info("Sin datos.")
-        else:
-            col_chart_df = column_bns.copy()
-            col_chart_df["situacion_es"] = col_chart_df["bottleneck_status"].map(
-                lambda v: STATUS_LABELS.get(v, v)
-            )
-            fig5 = px.bar(
-                col_chart_df.sort_values("bottleneck_tasks", ascending=True),
-                x="bottleneck_tasks", y="column_name",
-                color="situacion_es", color_discrete_map=BOTTLENECK_COLOR_ES,
-                orientation="h",
-                labels={
-                    "bottleneck_tasks": "Tareas críticas",
-                    "column_name":      "Fase",
-                    "situacion_es":     "Situación",
-                },
-            )
-            fig5.update_layout(margin=dict(l=0, r=10, t=10, b=0))
-            st.plotly_chart(fig5, width="stretch")
-
-    # ── tablas a ancho completo ────────────────────────────────────────────────
-    if not owner_bns.empty:
-        st.divider()
-        st.subheader("Detalle por responsable")
-        disp3 = _prepare(owner_bns, [
-            "Owner", "open_tasks", "bottleneck_tasks", "risk_tasks",
-            "currently_blocked_tasks", "median_open_age_days",
-            "dominant_column", "forecast_status", "bottleneck_status",
-        ])
-        for col in (_lbl("forecast_status"), _lbl("bottleneck_status")):
-            if col in disp3.columns:
-                disp3[col] = _translate_status(disp3[col])
-        styled3 = _safe_style(disp3, _lbl("bottleneck_status"), BOTTLENECK_COLOR_ES).format(
-            {_lbl("median_open_age_days"): "{:.1f}"},
-            na_rep="-",
-        )
-        st.dataframe(styled3, use_container_width=True,
-                     height=min(500, len(disp3) * 35 + 38))
-
-    if not column_bns.empty:
-        st.divider()
-        st.subheader("Detalle por fase Kanban")
-        disp4 = _prepare(column_bns, [
-            "column_name", "open_tasks", "bottleneck_tasks", "risk_tasks",
-            "owners_involved", "median_age_days", "mean_days_since_last_moved",
-            "currently_blocked_tasks", "bottleneck_status",
-        ])
-        if _lbl("bottleneck_status") in disp4.columns:
-            disp4[_lbl("bottleneck_status")] = _translate_status(disp4[_lbl("bottleneck_status")])
-        styled4 = _safe_style(disp4, _lbl("bottleneck_status"), BOTTLENECK_COLOR_ES).format(
-            {
-                _lbl("median_age_days"):            "{:.1f}",
-                _lbl("mean_days_since_last_moved"): "{:.1f}",
-            },
-            na_rep="-",
-        )
-        st.dataframe(styled4, use_container_width=True,
-                     height=min(500, len(disp4) * 35 + 38))
-
-    if selected_type == "Todos":
-        st.divider()
-        col_bt_sum, col_bt_chart = st.columns(2)
-
-        with col_bt_sum:
-            st.subheader("Resumen de bottlenecks por tipo")
-            type_bt_ov = segmented.get("type_bottleneck_overview", pd.DataFrame())
-            if not type_bt_ov.empty:
-                st.dataframe(
-                    type_bt_ov.rename(columns={
-                        "type_name":          "Tipo",
-                        "open_tasks":         "Abiertas",
-                        "bottleneck_tasks":   "Críticas",
-                        "risk_tasks":         "Riesgo",
-                        "healthy_tasks":      "Saludables",
-                        "bottleneck_owners":  "Propietarios BN",
-                        "risk_owners":        "Propietarios riesgo",
-                        "healthy_owners":     "Propietarios OK",
-                        "top_problem_column": "Columna problema",
-                    }),
-                    use_container_width=True,
-                )
-
-        with col_bt_chart:
-            st.subheader("Tareas bottleneck por tipo")
-            type_bt_ov = segmented.get("type_bottleneck_overview", pd.DataFrame())
-            if not type_bt_ov.empty:
-                fig6 = px.bar(
-                    type_bt_ov, x="type_name",
-                    y=["bottleneck_tasks", "risk_tasks", "healthy_tasks"],
-                    color_discrete_map={
-                        "bottleneck_tasks": "#C8553D",
-                        "risk_tasks":       "#E8A838",
-                        "healthy_tasks":    "#4CAF50",
-                    },
-                    labels={"type_name": "Tipo", "value": "Tareas", "variable": "Nivel"},
-                    barmode="stack",
-                )
-                fig6.update_layout(margin=dict(t=10, b=0))
-                st.plotly_chart(fig6, width="stretch")
-
-# ═════════════════════════════════════════════════════════════════════════════
-# TAB 4 — GESTIÓN DE DATOS
-# ═════════════════════════════════════════════════════════════════════════════
-with tab4:
 
     # ── sección: archivos registrados ─────────────────────────────────────────
     st.subheader("📁 Datasets en la base de datos")

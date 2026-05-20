@@ -193,12 +193,15 @@ def build_intake_recommendation(
 
     # 7. Owners con histórico en este tipo
     type_owners = bench.owner_type.loc[bench.owner_type["Type Name"] == type_name].copy()
-    type_owners = type_owners.rename(columns={"owner_type_count": "n_in_type"})
+    type_owners = type_owners.rename(columns={
+        "owner_type_count": "n_in_type",
+        "owner_type_median": "owner_median_in_type",
+    })
 
     type_median_val = type_estimation.type_median
     if pd.notna(type_median_val) and type_median_val != 0:
         type_owners["deviation_in_type"] = (
-            type_owners["owner_type_median"] / type_median_val - 1
+            type_owners["owner_median_in_type"] / type_median_val - 1
         )
     else:
         type_owners["deviation_in_type"] = np.nan
@@ -219,7 +222,8 @@ def build_intake_recommendation(
         ascending=[True, True],
     )
     cands_with = cands_with[
-        ["Owner", "forecast_wip_at_start", "forecast_status", "n_in_type", "deviation_in_type", "tier_in_type"]
+        ["Owner", "forecast_wip_at_start", "forecast_status", "n_in_type",
+         "owner_median_in_type", "deviation_in_type", "tier_in_type"]
     ].reset_index(drop=True)
 
     # 9. Construir candidates_without_history
@@ -243,7 +247,10 @@ def build_intake_recommendation(
         return "Sin histórico"
 
     cands_without["label"] = cands_without.apply(_make_label, axis=1)
-    cands_without = cands_without.sort_values("forecast_wip_at_start", ascending=True)
+    cands_without = cands_without.sort_values(
+        ["forecast_wip_at_start", "n_total"],
+        ascending=[True, False],
+    )
     cands_without = cands_without[
         ["Owner", "forecast_wip_at_start", "forecast_status", "n_total", "label"]
     ].reset_index(drop=True)

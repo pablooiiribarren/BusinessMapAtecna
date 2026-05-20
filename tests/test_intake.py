@@ -39,15 +39,17 @@ def _make_synthetic_forecast_base(owners: list[str]) -> pd.DataFrame:
 
 
 def test_basic_recommendation_structure():
-    """End-to-end con dataset sintético: estructura, tiers y labels correctos."""
+    """End-to-end con dataset sintético: estructura, tiers, labels y orden correctos."""
     rows = (
         [{"Owner": "Alice", "Type Name": "T1", "duration_days": 8.0}] * 12
         + [{"Owner": "Bob", "Type Name": "T1", "duration_days": 12.0}] * 6
         + [{"Owner": "Bob", "Type Name": "T2", "duration_days": 30.0}] * 5
         + [{"Owner": "Charlie", "Type Name": "T1", "duration_days": 10.0}] * 2
+        # Dana: 8 T2 tasks → sin histórico de T1, n_total=8 > Charlie(n_total=2)
+        + [{"Owner": "Dana", "Type Name": "T2", "duration_days": 10.0}] * 8
     )
     df = _make_closed_df(rows)
-    forecast_base = _make_synthetic_forecast_base(["Alice", "Bob", "Charlie"])
+    forecast_base = _make_synthetic_forecast_base(["Alice", "Bob", "Charlie", "Dana"])
     reference_date = pd.Timestamp("2024-01-01")
     start_date = reference_date + pd.Timedelta(days=7)
 
@@ -74,11 +76,21 @@ def test_basic_recommendation_structure():
     assert bob_row["n_in_type"] == 6
     assert bob_row["tier_in_type"] == "limited"
 
-    # candidates_without_history: Charlie con n_total=2 → label "Sin histórico"
+    # candidates_with_history tiene columna owner_median_in_type
+    assert "owner_median_in_type" in rec.candidates_with_history.columns
+
+    # candidates_without_history: Charlie (n_total=2) y Dana (n_total=8)
     nohist = rec.candidates_without_history
     charlie_rows = nohist.loc[nohist["Owner"] == "Charlie"]
     assert len(charlie_rows) == 1
     assert "Sin histórico" in charlie_rows.iloc[0]["label"]
+
+    # Orden por (forecast_wip_at_start asc, n_total desc):
+    # Dana (n_total=8) debe aparecer antes que Charlie (n_total=2)
+    # cuando ambos tienen el mismo forecast_wip_at_start
+    dana_idx = nohist.index[nohist["Owner"] == "Dana"][0]
+    charlie_idx = nohist.index[nohist["Owner"] == "Charlie"][0]
+    assert dana_idx < charlie_idx
 
     # horizon correcto
     assert rec.metadata["horizon_days"] == 7
