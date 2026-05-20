@@ -3,39 +3,7 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
-
-def build_duration_benchmarks(
-    df: pd.DataFrame,
-    min_group_size: int = 5,
-) -> tuple[pd.DataFrame, pd.DataFrame, float, float]:
-    closed = df.loc[
-        df["is_closed"] & df["duration_days"].notna() & (df["duration_days"] >= 0)
-    ].copy()
-
-    owner_type = (
-        closed.groupby(["Owner", "Type Name"])["duration_days"]
-        .agg(
-            owner_type_count="count",
-            owner_type_median="median",
-            owner_type_p90=lambda series: series.quantile(0.90),
-        )
-        .reset_index()
-    )
-    owner_type = owner_type.loc[owner_type["owner_type_count"] >= min_group_size].copy()
-
-    type_only = (
-        closed.groupby("Type Name")["duration_days"]
-        .agg(
-            type_count="count",
-            type_median="median",
-            type_p90=lambda series: series.quantile(0.90),
-        )
-        .reset_index()
-    )
-
-    global_median = float(closed["duration_days"].median())
-    global_p90 = float(closed["duration_days"].quantile(0.90))
-    return owner_type, type_only, global_median, global_p90
+from .reliability import build_duration_benchmarks
 
 
 def build_alert_reason(row: pd.Series) -> str:
@@ -67,9 +35,11 @@ def build_open_tasks(
     forecast_reference_date: pd.Timestamp,
     min_group_size: int = 5,
 ) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
-    owner_type_bench, type_bench, global_duration_median, global_duration_p90 = (
-        build_duration_benchmarks(df, min_group_size=min_group_size)
-    )
+    bench = build_duration_benchmarks(df, min_group_size=min_group_size)
+    owner_type_bench = bench.owner_type
+    type_bench = bench.type_only
+    global_duration_median = bench.global_median
+    global_duration_p90 = bench.global_p90
 
     open_tasks = df.loc[df["Actual End Date"].isna()].copy()
     open_tasks["Owner"] = open_tasks["Owner"].fillna("UNASSIGNED")
